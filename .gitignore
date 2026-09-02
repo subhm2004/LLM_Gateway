@@ -6,7 +6,6 @@ dist/
 !.env.example
 data/
 DEPLOYMENT.md
-EMAIL.md
 commits.sh
 *.db
 *.db-shm
