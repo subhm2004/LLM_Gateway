@@ -3,7 +3,7 @@ services:
     name: llm-gateway
     runtime: docker
     plan: free
-    region: singapore
+    region: ohio
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
