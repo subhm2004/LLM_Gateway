@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Gateway — spend</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 24px; max-width: 1100px; background: #fbfbfa; color: #1a1a1a; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.sub { color: #666; margin: 0 0 20px; }
+  fieldset { border: 1px solid #ddd; border-radius: 4px; padding: 12px 14px; margin: 0 0 18px; }
+  legend { color: #666; padding: 0 6px; }
+  input, button { font: inherit; padding: 6px 8px; border: 1px solid #ccc; border-radius: 3px; }
+  button { background: #1a1a1a; color: #fff; border-color: #1a1a1a; cursor: pointer; }
+  button.secondary { background: #fff; color: #1a1a1a; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; white-space: nowrap; }
+  th { color: #666; font-weight: normal; }
+  td.num { text-align: right; }
+  .bar { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: #1a1a1a; }
+  .err { color: #b00; white-space: pre-wrap; }
+  .newkey { background: #fffbe6; border: 1px solid #e6d98a; padding: 10px; border-radius: 4px;
+            margin-top: 10px; word-break: break-all; }
+  .muted { color: #888; }
+  details { margin-top: 18px; }
+  pre { background: #f4f4f2; padding: 10px; border-radius: 4px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>LLM Gateway — spend</h1>
+<p class="sub">Reads the same authenticated JSON endpoints as curl. The token stays in this tab only.</p>
+
+<fieldset>
+  <legend>admin token</legend>
+  <input id="tok" type="password" size="44" placeholder="ADMIN_TOKEN" autocomplete="off">
+  <button onclick="load()">Load</button>
+  <label class="muted"><input type="checkbox" id="remember"> remember in this tab</label>
+  <div id="err" class="err"></div>
+</fieldset>
+
+<fieldset>
+  <legend>create a virtual key</legend>
+  <input id="name" placeholder="name" size="24">
+  <input id="budget" type="number" step="0.01" value="0.25" size="8" placeholder="budget USD">
+  <button class="secondary" onclick="createKey()">Create</button>
+  <div id="newkey"></div>
+</fieldset>
+
+<div id="out"></div>
+
+<details>
+  <summary class="muted">equivalent curl</summary>
+  <pre id="curl"></pre>
+</details>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => "$" + Number(n).toFixed(6);
+
+if (sessionStorage.getItem("tok")) { $("tok").value = sessionStorage.getItem("tok"); $("remember").checked = true; }
+
+function token() {
+  const t = $("tok").value.trim();
+  if ($("remember").checked) sessionStorage.setItem("tok", t); else sessionStorage.removeItem("tok");
+  return t;
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "authorization": "Bearer " + token(), "content-type": "application/json", ...(opts.headers || {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body.error && body.error.message) || res.status + " " + res.statusText);
+  return body;
+}
+
+async function load() {
+  $("err").textContent = "";
+  $("curl").textContent =
+    "curl -s " + location.origin + "/admin/keys -H \"Authorization: Bearer $ADMIN_TOKEN\" | jq";
+  try {
+    const { keys } = await api("/admin/keys");
+    const stats = await api("/admin/stats");
+    render(keys, stats);
+  } catch (e) { $("err").textContent = e.message; $("out").innerHTML = ""; }
+}
+
+function render(keys, stats) {
+  const rows = keys.map((k) => {
+    const used = k.budget_micro_usd ? Math.min(100, (k.spent_micro_usd / k.budget_micro_usd) * 100) : 0;
+    return `<tr>
+      <td>${esc(k.name)}</td>
+      <td class="muted">${esc(k.key_prefix)}…</td>
+      <td>${k.status}</td>
+      <td class="num">${usd(k.budget_usd)}</td>
+      <td class="num">${usd(k.spent_usd)}</td>
+      <td class="num">${usd(k.remaining_usd)}</td>
+      <td><div class="bar"><i style="width:${used.toFixed(1)}%"></i></div></td>
+      <td><button class="secondary" onclick="detail('${k.id}')">usage</button></td>
+    </tr>`;
+  }).join("");
+
+  const breakers = stats.circuit_breakers.length
+    ? stats.circuit_breakers.map((b) => `${b.target}=${b.state}`).join(", ") : "all closed";
+  const provs = stats.providers.map((p) => `${p.name}${p.configured ? "" : " (no key)"}`).join(", ");
+
+  $("out").innerHTML = `
+    <table>
+      <tr><th>name</th><th>prefix</th><th>status</th><th class="num">budget</th>
+          <th class="num">spent</th><th class="num">left</th><th>used</th><th></th></tr>
+      ${rows || '<tr><td colspan="8" class="muted">no keys yet</td></tr>'}
+    </table>
+    <p class="muted">store: ${stats.store} · providers: ${provs} · breakers: ${breakers}
+       · cache hit rate: ${(stats.cache.hit_rate * 100).toFixed(1)}% (${stats.cache.enabled ? "on" : "off"})
+       · priced ${stats.catalog.priced_at}</p>
+    <div id="detail"></div>`;
+}
+
+async function detail(id) {
+  try {
+    const d = await api("/admin/usage?key_id=" + encodeURIComponent(id) + "&limit=25");
+    const byModel = d.by_model.map((m) =>
+      `<tr><td>${esc(m.served_provider)}/${esc(m.served_model)}</td>
+           <td class="num">${m.requests}</td><td class="num">${m.input_tokens}</td>
+           <td class="num">${m.output_tokens}</td><td class="num">${usd(m.cost_usd)}</td></tr>`).join("");
+    const events = d.recent_events.map((e) =>
+      `<tr><td class="muted">${e.created_at.slice(11, 19)}</td>
+           <td>${e.status}${e.error_code ? " · " + esc(e.error_code) : ""}</td>
+           <td>${esc(e.served_model || e.requested_model)}</td>
+           <td class="num">${e.input_tokens}/${e.output_tokens}</td>
+           <td class="num">${usd(e.cost_micros / 1e6)}</td>
+           <td class="num">${e.latency_ms}ms</td>
+           <td class="muted">${e.cache_hit ? "cache" : ""}${e.fallback_used ? "fallback" : ""}</td></tr>`).join("");
+    $("detail").innerHTML = `
+      <h3>${esc(d.key.name)} — ${usd(d.usage.cost_usd)} across ${d.usage.requests} requests
+        (${d.usage.ok_requests} ok, ${d.usage.blocked_requests} blocked, ${d.usage.error_requests} error)</h3>
+      <table><tr><th>model</th><th class="num">reqs</th><th class="num">in</th>
+        <th class="num">out</th><th class="num">cost</th></tr>${byModel || '<tr><td colspan="5" class="muted">none</td></tr>'}</table>
+      <table><tr><th>time</th><th>status</th><th>model</th><th class="num">tok</th>
+        <th class="num">cost</th><th class="num">latency</th><th></th></tr>${events}</table>`;
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function createKey() {
+  $("err").textContent = "";
+  try {
+    const body = await api("/admin/keys", {
+      method: "POST",
+      body: JSON.stringify({ name: $("name").value || "unnamed", budget_usd: Number($("budget").value) }),
+    });
+    $("newkey").innerHTML = `<div class="newkey"><b>Copy this now — it is not stored in plaintext and
+      cannot be shown again.</b><br><code>${esc(body.key)}</code></div>`;
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+</script>
+</body>
+</html>
