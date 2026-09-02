@@ -150,7 +150,8 @@ sensitive is ever read from a file in the repo.
 | Variable | Default | Notes |
 |---|---|---|
 | `ADMIN_TOKEN` | — | **Required.** ≥16 chars. Server refuses to boot without it. |
-| `DATABASE_URL` | — | Postgres when set; SQLite file when not. |
+| `DATABASE_URL` | — | Postgres when set; SQLite file when not. TLS certificates are verified. |
+| `DATABASE_SSL_INSECURE` | `false` | Opt out of TLS verification, for self-hosted Postgres with a self-signed cert. |
 | `GROQ_API_KEY` | — | Primary provider. |
 | `ANTHROPIC_API_KEY` | — | Optional second provider (different schema — real cross-provider fallback). |
 | `PROVIDER_TIMEOUT_MS` | `30000` | Per attempt. |
@@ -265,7 +266,7 @@ src/
   cache.ts         optional exact-match response cache
   reconcile.ts     boot-time catalog-vs-provider drift check
   providers/       openai-compat (groq/openai/ollama) · anthropic · mock
-  store/           interface + sqlite (node:sqlite) + postgres (pg)
+  store/           interface + sqlite (node:sqlite) + postgres (pg, single-statement CTEs)
 config/models.json routes, fallback chains, prices
 test/              38 tests: budget + concurrency, fallback, auth, ledger, cost math,
                    catalog drift, and Postgres CAS (skipped without DATABASE_URL)

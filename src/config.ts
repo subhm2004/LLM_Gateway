@@ -22,6 +22,7 @@ const EnvSchema = z.object({
   ADMIN_TOKEN: z.string().min(16, "ADMIN_TOKEN must be at least 16 characters"),
 
   DATABASE_URL: z.string().optional(),
+  DATABASE_SSL_INSECURE: bool(false),
   SQLITE_PATH: z.string().default("./data/gateway.db"),
 
   GROQ_API_KEY: z.string().optional(),

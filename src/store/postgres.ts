@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS idx_usage_key_time ON usage_events(key_id, created_at);
 `;
 
+function parseConnection(connectionString: string): { url: string; tls: boolean } {
+  try {
+    const u = new URL(connectionString);
+    const mode = u.searchParams.get("sslmode");
+    const tls = mode !== null && mode !== "disable";
+    u.searchParams.delete("sslmode");
+    u.searchParams.delete("channel_binding");
+    return { url: u.toString(), tls };
+  } catch {
+    return { url: connectionString, tls: /sslmode=(require|prefer|verify)/.test(connectionString) };
+  }
+}
+
 const KEY_COLS =
   "id, name, key_prefix, budget_micros, spent_micros, reserved_micros, status, created_at";
 
@@ -65,16 +78,14 @@ export class PostgresStore implements Store {
   readonly dialect = "postgres" as const;
   private pool: pg.Pool;
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, insecureTls = false) {
+    const { url, tls } = parseConnection(connectionString);
     this.pool = new pg.Pool({
-      connectionString,
-      max: 10,
+      connectionString: url,
+      max: 20,
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
-
-      ssl: /sslmode=(require|prefer)/.test(connectionString)
-        ? { rejectUnauthorized: false }
-        : undefined,
+      connectionTimeoutMillis: 20_000,
+      ssl: tls ? { rejectUnauthorized: !insecureTls } : undefined,
     });
   }
 
@@ -84,24 +95,6 @@ export class PostgresStore implements Store {
 
   async close() {
     await this.pool.end();
-  }
-
-  private async tx<T>(fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
-    const c = await this.pool.connect();
-    try {
-      await c.query("BEGIN");
-      const out = await fn(c);
-      await c.query("COMMIT");
-      return out;
-    } catch (e) {
-      try {
-        await c.query("ROLLBACK");
-      } catch {
-      }
-      throw e;
-    } finally {
-      c.release();
-    }
   }
 
   async createKey(k: NewKey): Promise<ApiKeyRecord> {
@@ -171,59 +164,65 @@ export class PostgresStore implements Store {
     nowIso: string,
     expiresAtIso: string,
   ): Promise<ReserveResult> {
-    return this.tx(async (c) => {
-      const { rows } = await c.query(
-        `UPDATE api_keys
+    const { rows } = await this.pool.query(
+      `WITH claimed AS (
+         UPDATE api_keys
             SET reserved_micros = reserved_micros + $1
           WHERE id = $2
             AND status = 'active'
             AND spent_micros + reserved_micros + $1 <= budget_micros
-        RETURNING ${KEY_COLS}`,
-        [amountMicros, keyId],
-      );
+         RETURNING ${KEY_COLS}
+       ), inserted AS (
+         INSERT INTO reservations (id, key_id, amount_micros, state, created_at, expires_at)
+         SELECT $3, $2, $1, 'open', $4, $5 FROM claimed
+       )
+       SELECT ${KEY_COLS}, true AS granted FROM claimed
+       UNION ALL
+       SELECT ${KEY_COLS}, false AS granted FROM api_keys
+        WHERE id = $2 AND NOT EXISTS (SELECT 1 FROM claimed)`,
+      [amountMicros, keyId, reservationId, nowIso, expiresAtIso],
+    );
 
-      const updated = rows[0] as ApiKeyRecord | undefined;
-      if (!updated) {
-        const { rows: kr } = await c.query(
-          `SELECT ${KEY_COLS} FROM api_keys WHERE id = $1`,
-          [keyId],
-        );
-        const key = (kr[0] ?? null) as ApiKeyRecord | null;
-        if (!key) return { ok: false as const, reason: "not_found" as const, key: null };
-        if (key.status !== "active")
-          return { ok: false as const, reason: "disabled" as const, key };
-        return { ok: false as const, reason: "insufficient_budget" as const, key };
-      }
+    const row = rows[0] as (ApiKeyRecord & { granted: boolean }) | undefined;
+    if (!row) return { ok: false as const, reason: "not_found" as const, key: null };
 
-      await c.query(
-        `INSERT INTO reservations (id, key_id, amount_micros, state, created_at, expires_at)
-         VALUES ($1,$2,$3,'open',$4,$5)`,
-        [reservationId, keyId, amountMicros, nowIso, expiresAtIso],
-      );
-      return { ok: true as const, key: updated };
-    });
+    const { granted, ...key } = row;
+    if (granted) return { ok: true as const, key };
+    if (key.status !== "active") return { ok: false as const, reason: "disabled" as const, key };
+    return { ok: false as const, reason: "insufficient_budget" as const, key };
   }
 
   async settle(a: SettleArgs): Promise<ApiKeyRecord | null> {
-    return this.tx(async (c) => {
-      const { rows } = await c.query(
-        `UPDATE reservations SET state = 'settled'
-          WHERE id = $1 AND state = 'open' RETURNING amount_micros`,
-        [a.reservationId],
-      );
-      const releaseMicros = rows[0] ? a.reservedMicros : 0;
-
-      const { rows: kr } = await c.query(
-        `UPDATE api_keys
-            SET reserved_micros = GREATEST(reserved_micros - $1, 0),
+    const e = a.event;
+    const { rows } = await this.pool.query(
+      `WITH claimed AS (
+         UPDATE reservations SET state = 'settled'
+          WHERE id = $1 AND state = 'open'
+         RETURNING amount_micros
+       ), settled AS (
+         UPDATE api_keys
+            SET reserved_micros = GREATEST(
+                  reserved_micros - COALESCE((SELECT amount_micros FROM claimed), 0), 0),
                 spent_micros    = spent_micros + $2
           WHERE id = $3
-        RETURNING ${KEY_COLS}`,
-        [releaseMicros, a.actualMicros, a.keyId],
-      );
-      await insertEvent(c, a.event);
-      return (kr[0] ?? null) as ApiKeyRecord | null;
-    });
+         RETURNING ${KEY_COLS}
+       ), logged AS (
+         INSERT INTO usage_events
+           (id, request_id, key_id, requested_model, served_provider, served_model,
+            input_tokens, output_tokens, cost_micros, status, http_status, error_code,
+            cache_hit, fallback_used, attempts, latency_ms, created_at)
+         VALUES ($4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       )
+       SELECT * FROM settled`,
+      [
+        a.reservationId, a.actualMicros, a.keyId,
+        randomUUID(), e.request_id, e.key_id, e.requested_model, e.served_provider,
+        e.served_model, e.input_tokens, e.output_tokens, e.cost_micros, e.status,
+        e.http_status, e.error_code, e.cache_hit, e.fallback_used, e.attempts,
+        e.latency_ms, e.created_at,
+      ],
+    );
+    return (rows[0] ?? null) as ApiKeyRecord | null;
   }
 
   async recordEvent(event: Omit<UsageEvent, "id">) {
@@ -231,22 +230,22 @@ export class PostgresStore implements Store {
   }
 
   async sweepExpiredReservations(nowIso: string) {
-    return this.tx(async (c) => {
-      const { rows } = await c.query(
-        `UPDATE reservations SET state = 'expired'
+    const { rows } = await this.pool.query(
+      `WITH expired AS (
+         UPDATE reservations SET state = 'expired'
           WHERE state = 'open' AND expires_at < $1
-        RETURNING key_id, amount_micros`,
-        [nowIso],
-      );
-      for (const r of rows) {
-        await c.query(
-          `UPDATE api_keys SET reserved_micros = GREATEST(reserved_micros - $1, 0)
-            WHERE id = $2`,
-          [r.amount_micros, r.key_id],
-        );
-      }
-      return rows.length;
-    });
+         RETURNING key_id, amount_micros
+       ), totals AS (
+         SELECT key_id, SUM(amount_micros) AS total FROM expired GROUP BY key_id
+       ), returned AS (
+         UPDATE api_keys k
+            SET reserved_micros = GREATEST(k.reserved_micros - t.total, 0)
+           FROM totals t WHERE k.id = t.key_id
+       )
+       SELECT COUNT(*)::int AS n FROM expired`,
+      [nowIso],
+    );
+    return Number(rows[0]?.n ?? 0);
   }
 
   async usageSummary(keyId: string, sinceIso?: string): Promise<UsageSummary> {

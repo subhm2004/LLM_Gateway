@@ -29,7 +29,11 @@ export async function buildServer(
 
   const store =
     opts.store ??
-    (await createStore({ databaseUrl: cfg.DATABASE_URL, sqlitePath: cfg.SQLITE_PATH }));
+    (await createStore({
+      databaseUrl: cfg.DATABASE_URL,
+      sqlitePath: cfg.SQLITE_PATH,
+      insecureTls: cfg.DATABASE_SSL_INSECURE,
+    }));
   await store.init();
 
   const ctx: AppContext = {

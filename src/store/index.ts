@@ -84,10 +84,11 @@ export interface Store {
 export async function createStore(opts: {
   databaseUrl?: string | undefined;
   sqlitePath: string;
+  insecureTls?: boolean;
 }): Promise<Store> {
   if (opts.databaseUrl) {
     const { PostgresStore } = await import("./postgres.ts");
-    return new PostgresStore(opts.databaseUrl);
+    return new PostgresStore(opts.databaseUrl, opts.insecureTls ?? false);
   }
   const { SqliteStore } = await import("./sqlite.ts");
   return new SqliteStore(opts.sqlitePath);

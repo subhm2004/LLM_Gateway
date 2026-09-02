@@ -22,7 +22,7 @@ dependencies, no native modules, 38 automated tests plus a 25-check live endpoin
 | | |
 |---|---|
 | **Runtime** | Node 24, TypeScript, Fastify |
-| **Datastore** | Postgres in production (`DATABASE_URL`), Node 24's built-in `node:sqlite` locally and in tests |
+| **Datastore** | Postgres in production (`DATABASE_URL`), Node 24's built-in `node:sqlite` locally and in tests. Both drivers' budget CAS is tested under concurrency |
 | **Providers** | Groq (live-verified) · Anthropic Messages (written, not live-tested) · in-process mock (free) |
 | **Budget unit** | Integer micro-USD (1 USD = 1,000,000). No floats anywhere in the ledger |
 | **Enforcement** | Two-phase `reserve → settle`, one conditional `UPDATE` as the compare-and-swap |
@@ -516,75 +516,144 @@ hit. Its failure mode is "no saving"; semantic's failure mode is "wrong answer".
 
 ## The decision I'm least confident about
 
-**Supporting two datastores behind one interface.**
+I have to answer this twice, because I measured the thing I was unsure about and the answer
+changed.
 
-**For.** Zero-setup local dev and tests — `npm test` needs nothing installed and runs in
-memory — while production gets a durable Postgres that survives Render's ephemeral disk. The
-interface is small and the divergence is ~40 lines. Being able to run the full suite in-memory
-is *why* there are 32 tests; against a container I would have written far fewer.
+### What I was least confident about, and what happened when I tested it
 
-**Against.** The single most correctness-critical statement in this codebase is written twice,
-and **only one copy is tested.** The SQLite CAS is covered by a 40-way concurrency test and a
-50-way live run. The Postgres CAS — the one that will actually run in production — is backed
-by my reading of `READ COMMITTED` re-check semantics and nothing else. That is precisely the
-wrong place to hold asymmetric confidence. A subtle dialect difference would surface as
-silent overspend under load: the hardest possible failure to notice, because nothing errors.
+**Supporting two datastores behind one interface.** The worry was specific: the most
+correctness-critical statement in the codebase — the budget CAS — is written twice, and only
+the SQLite copy was tested. The Postgres copy, the one that actually runs in production, was
+backed by my reading of `READ COMMITTED` semantics and nothing else. Asymmetric confidence in
+exactly the wrong place.
 
-There is a sharper version of the criticism: my justification is *developer convenience*, and
-I traded *production* correctness assurance for it. Given a container in CI, the honest answer
-is probably "Postgres everywhere, use testcontainers, eat the setup cost."
+So I got a Neon instance and ran it. `test/postgres.test.ts`: 60 simultaneous reservations
+against a budget that affords exactly 10, asserting `granted === floor(budget/amount)` rather
+than the weaker `spent <= budget`.
 
-**What I did about it.** `test/postgres.test.ts` now exists and exercises the Postgres CAS
-directly: 60 simultaneous reservations against a budget that affords exactly 10, asserting
-`granted === floor(budget/amount)` rather than merely `spent <= budget`; 30 concurrent settles
-asserting nothing is lost or double-counted; the orphan sweeper; and the disabled-key path. It
-is gated on `DATABASE_URL` and **skips with a printed reason** when no database is present, so
-`npm test` still needs nothing installed. `npm run test:pg` against any Postgres runs it.
+**The CAS was correct. The transaction around it was not.**
 
-I could not run it here — no Postgres and no Docker daemon on this machine — so the honest
-status is: **the test is written and ready, the measurement has not been taken.** That is a
-meaningful step up from "I would write it," and one `DATABASE_URL` away from being settled,
-but it is not the same as green. Running it in CI against a real Postgres remains the first
-thing I would do with more time.
+The first run failed — not on the invariant, on `timeout exceeded when trying to connect`.
+Each `reserve()` was a full transaction: `connect` → `BEGIN` → `UPDATE` → `INSERT` → `COMMIT`,
+about five network round trips. Against a Postgres ~250ms away with a pool of 10, sixty
+concurrent reserves queued past the connection timeout. That is not a test artifact: five
+round trips per reservation puts a hard ceiling on gateway throughput of roughly
+`pool_size / (5 × RTT)`, and a gateway is *by definition* the thing every request funnels
+through.
 
----
+The fix was to collapse each multi-statement transaction into **one statement** using
+data-modifying CTEs — a single statement is atomic in Postgres without an explicit
+transaction, so `reserve`, `settle` and the reservation sweep each became one round trip
+instead of four or five:
+
+```sql
+WITH claimed AS (
+  UPDATE api_keys SET reserved_micros = reserved_micros + $1
+   WHERE id = $2 AND status = 'active'
+     AND spent_micros + reserved_micros + $1 <= budget_micros
+  RETURNING ...
+), inserted AS (
+  INSERT INTO reservations (...) SELECT $3, $2, $1, 'open', $4, $5 FROM claimed
+)
+SELECT ..., true AS granted FROM claimed
+UNION ALL
+SELECT ..., false AS granted FROM api_keys WHERE id = $2 AND NOT EXISTS (SELECT 1 FROM claimed);
+```
+
+Measured, same database, same tests:
+
+| | before | after |
+|---|---|---|
+| 60 simultaneous reservations | 10.3s — **failed** | 4.8s — pass |
+| 30 concurrent settles | 20.7s | **1.7s** |
+| orphan sweeper | 3.7s | 1.4s |
+| whole suite | 41.2s | **12.0s** |
+
+Then end to end through HTTP, on Postgres, with a real Groq key: 40 concurrent requests on a
+500 µUSD key → 7 × `200`, 33 × `402`, spent 371, `reserved` back to 0. **The invariant holds
+on both drivers, and both are now measured rather than argued.**
+
+Two smaller things the same exercise surfaced: the pool was configured with
+`rejectUnauthorized: false`, which silently skips TLS certificate verification — Neon presents
+a perfectly valid chain, so that was weakness for no benefit, and it now verifies by default
+with `DATABASE_SSL_INSECURE` as an explicit opt-out for self-hosted Postgres with a
+self-signed cert. And `sslmode` / `channel_binding` are now parsed out of the URL and the TLS
+decision made explicitly in code, rather than depending on a `pg` URL-parsing behaviour that
+its own maintainers have deprecated.
+
+**What I'd still flag.** The original concern is answered, but a weaker version survives: two
+implementations of one invariant can *drift* on the next change, and nothing automated stops
+that. Both suites pass on my machine; neither runs in CI. That is a process gap now, not a
+correctness unknown.
+
+### So what am I least confident about now?
+
+**Putting a mock model as the last rung of the fallback chain.**
+
+*For:* for classification-shaped traffic — "is this spam", "which category" — a clearly
+labelled degraded answer keeps a pipeline moving when every real provider is down, and that
+is worth more than a 502. It is priced at zero, it names itself in the response text, and
+`served_model: "mock-echo"` is in both the body and the ledger.
+
+*Against:* it converts a loud failure into a quiet one, and this codebase already has a case
+study in why that is dangerous. When Groq's retired model IDs broke my primary route, the
+fallback returned a healthy-looking `200` and hid a completely dead route from me. A caller
+who checks `response.ok` and reads `choices[0].message.content` — which is *most* callers,
+because that is what every SDK example does — gets a stub back and no signal that anything is
+wrong. I built an observability field to detect exactly this problem, and then shipped a
+feature that depends on callers reading it.
+
+*Where I've landed:* it stays, because it is opt-in per route in the catalog rather than
+global, and a route can simply omit the mock target to get a hard 502 instead. But the
+default should probably be the other way round — fail loudly unless a route explicitly asks
+for degradation — and I am not confident I chose the right default. The honest test would be
+to ask a caller which they would rather debug at 3am.
 
 ## Where it breaks
 
-1. **Postgres concurrency is untested.** Above. Highest-priority gap.
+1. **Neither driver's tests run in CI.** Both are measured locally and both pass; nothing
+   automated stops the two copies of the budget CAS from drifting apart on the next change.
+   A process gap rather than a correctness unknown, but it is the one I would close first.
 2. **Stale prices are still silent.** Model *IDs* are now reconciled at boot, so a retired
    model is caught before the first request. Prices are not — there is no per-token price in
    any provider's model listing, so if a provider re-prices, every cost figure is confidently
    wrong and nothing alerts. Catching that needs a diff against actual provider billing,
    which is on the one-more-week list.
-3. **In-memory breaker and cache don't scale horizontally.** With N replicas each learns about
+3. **Throughput is bounded by database round trips.** Reserve and settle are now one
+   statement each, so a request costs 2 round trips to Postgres rather than ~9. That is a
+   ~4x improvement and it is still the dominant cost when the database is far away — measured
+   at ~250ms RTT to `us-east-2`. Colocating the service and the database in one region is
+   worth more than any code change here.
+
+4. **In-memory breaker and cache don't scale horizontally.** With N replicas each learns about
    an outage independently (up to N probes per cooldown) and the cache hit rate is roughly
    1/N of a shared one. **Budgets are unaffected** — those live in the database.
-4. **Reasoning models bill for output you never see.** Handled with a warning, not solved.
-5. **Token estimation is a heuristic.** Fine for reservations since settlement uses real
+5. **Reasoning models bill for output you never see.** Handled with a warning, not solved.
+6. **Token estimation is a heuristic.** Fine for reservations since settlement uses real
    numbers, but a pathological input (dense CJK, base64) under-estimates and could let one
    request finish slightly over cap.
-6. **Reservation TTL is a blunt instrument.** A provider slower than the 120s TTL would have
+7. **Reservation TTL is a blunt instrument.** A provider slower than the 120s TTL would have
    its reservation swept while still in flight, and settle would then add cost against
    already-released headroom. Bounded by the 70s request deadline so it cannot happen at
    current settings — but the two constants are coupled and nothing enforces the relationship.
-7. **The ledger write is in the request path.** If the database is unreachable *after* a
+8. **The ledger write is in the request path.** If the database is unreachable *after* a
    successful provider call, the caller still gets their completion — failing them would make
    them retry and pay twice — and the row is emitted to stdout at `fatal` for manual
    reconciliation. A deliberate choice, but "the logs are the write-ahead log" is not
    something I would want to rely on twice.
-8. **Free-tier cold starts.** Render free spins down when idle; the first request after a
+9. **Free-tier cold starts.** Render free spins down when idle; the first request after a
    pause is slow.
-9. **No request-level idempotency.** A retried timeout is charged twice.
-10. **`qwen/*` emits its chain-of-thought inline** in `content` inside `<think>` tags rather
+10. **No request-level idempotency.** A retried timeout is charged twice.
+11. **`qwen/*` emits its chain-of-thought inline** in `content` inside `<think>` tags rather
     than as separate reasoning tokens. The gateway passes it through faithfully — filtering
     provider output is not a gateway's job — but callers should know, and it makes those
     routes disproportionately expensive per useful token.
 
 ## With one more week
 
-1. **Run `test/postgres.test.ts` in CI** against a real Postgres. The test is written; it
-   needs a `docker compose` service and one matrix entry. Day one — it is the gap above.
+1. **Both suites in CI.** `test/postgres.test.ts` passes against a real Neon instance today;
+   it needs a `docker compose` service and one GitHub Actions matrix entry so it keeps
+   passing. Day one — it is the gap above.
 2. **Rate limits** — sliding-window RPM/TPM per key, enforced next to the budget CAS. The
    single most valuable thing still missing: a spend cap does not stop someone burning a
    month's budget in ten seconds.
@@ -609,7 +678,9 @@ thing I would do with more time.
 | Automated | 38 tests, `node:test`, no framework | 38/38 pass |
 | Endpoints | 25-check live battery (auth, validation, status codes) | 25/25 pass |
 | Provider | Real Groq completions across 3 routes | pass |
-| Budget | Sequential drain, 30- and 50-way concurrency | cap held, nothing leaked |
+| Budget (SQLite) | Sequential drain, 30- and 50-way concurrency | cap held, nothing leaked |
+| Budget (Postgres) | 60 simultaneous reservations, 30 concurrent settles, sweeper | `granted === floor(budget/amount)`, exact |
+| End to end on Postgres | 40 concurrent HTTP requests, real Groq, live ledger | 7 ok / 33 refused, spent 371 of 500, reserved 0 |
 | Fallback | Forced failure, whole-chain failure, breaker opening | pass, zero billed on failure |
 | Catalog | Reconciliation against live Groq, plus injected drift | `ok` clean, `drift` correctly named |
 | Ops | SIGTERM graceful shutdown, restart persistence | pass |
@@ -621,10 +692,9 @@ invariant, fallback classification, auth — and absent where it isn't. They ass
 "8 requests succeed", so it holds for any correct implementation and fails for every
 incorrect one, including ones I haven't thought of.
 
-**Not verified:** the Postgres driver under concurrency — the test exists (`npm run test:pg`)
-but there is no Postgres or Docker daemon on this machine to run it against; the Anthropic
-adapter against a live Anthropic key (written against the documented API, no key available);
-the Docker image build (same reason — Render builds it from the same Dockerfile).
+**Not verified:** the Anthropic adapter against a live Anthropic key — written against the
+documented API, no key available; the Docker image build — no Docker daemon on this machine,
+though Render builds it from the same Dockerfile.
 
 `npm run verify` runs typecheck, the full suite and the production build in one command.
 

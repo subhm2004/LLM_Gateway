@@ -13,6 +13,7 @@ const cfg = loadConfig();
 const store = await createStore({
   databaseUrl: cfg.DATABASE_URL,
   sqlitePath: cfg.SQLITE_PATH,
+  insecureTls: cfg.DATABASE_SSL_INSECURE,
 });
 await store.init();
 

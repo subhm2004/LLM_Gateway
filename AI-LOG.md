@@ -127,7 +127,33 @@ and both routes call it.
 The uncomfortable part: I'd stated the principle and still missed the instance. Principles
 don't audit code; greps and tests do.
 
-### 5. A plausible toolchain assumption that was simply false
+### 5. The code was right; the shape around it was the bottleneck
+
+Once I had a real Postgres, the concurrency test failed on the first run — and **not on the
+invariant.** It failed with `timeout exceeded when trying to connect`. The CAS was correct.
+The transaction wrapping it was five network round trips (`connect`, `BEGIN`, `UPDATE`,
+`INSERT`, `COMMIT`), and against a database ~250ms away with a pool of 10, sixty concurrent
+reservations queued past the connection timeout.
+
+I had reviewed that code carefully — it was on my short list of "things AI does not get to be
+the last reader of" — and I had reviewed it for **correctness**, which it had. I never asked
+how many round trips it cost, because on the in-memory SQLite I was testing against, round
+trips are free. The test environment had quietly removed the dimension the bug lived in.
+
+Collapsing each transaction into a single data-modifying CTE took reserve, settle and the
+sweeper from four or five round trips to one. Same database, same tests: the failing test
+went to 4.8s and passed; concurrent settles went 20.7s → 1.7s; the suite went 41.2s → 12.0s.
+
+The lesson is narrower than "test against production-like infrastructure," which everyone
+already says. It is: **an easier test environment does not just make tests pass more often,
+it deletes whole categories of bug from view.** SQLite in memory cannot express "this is slow
+because it talks to the network too many times," so no amount of local testing was ever going
+to surface it. Two other things fell out of the same session — TLS certificate verification
+was silently disabled with `rejectUnauthorized: false` when Neon presents a perfectly valid
+chain, and the `sslmode` handling relied on `pg` URL-parsing behaviour its own maintainers
+have deprecated. Both were invisible until something real was on the other end of the socket.
+
+### 6. A plausible toolchain assumption that was simply false
 
 The plan was to run TypeScript directly on Node 24 via `--experimental-strip-types`. That
 mode cannot handle TypeScript parameter properties (`constructor(private readonly x: T)`),
@@ -288,13 +314,13 @@ the real context windows (including `qwen/qwen3.8-27b`'s odd 131,042 rather than
   a live Anthropic key** — I only have Groq. It is in the repo because a genuinely different
   schema is what makes the fallback chain a real translation layer rather than a loop over
   identical clients, but it is untested code and DECISIONS.md says so.
-- The **Postgres driver's CAS**: I have now written the test — `test/postgres.test.ts`,
-  60 simultaneous reservations asserting `granted === floor(budget/amount)`, concurrent
-  settles, the orphan sweeper — but I could not **run** it: no Postgres and no Docker daemon
-  on this machine. It skips with a printed reason and runs via `npm run test:pg` against any
-  `DATABASE_URL`. Written-and-unrun is better than unwritten, and it is still not green. This
-  remains my stated "least confident" decision, and I would rather say that plainly than let
-  a test file in the repo imply a measurement I never took.
+- The **Postgres driver's CAS** was my stated "least confident" decision while it was
+  untested. It is now measured against a real Neon instance — 60 simultaneous reservations
+  asserting `granted === floor(budget/amount)` exactly, concurrent settles, the orphan
+  sweeper — plus 40 concurrent HTTP requests end to end on Postgres with a live Groq key
+  (7 admitted, 33 refused, spent 371 of a 500 cap, nothing leaked). Running it is what found
+  the round-trip bug above. What remains is a process gap, not a correctness unknown: neither
+  suite runs in CI, so nothing stops the two copies of the CAS drifting on the next change.
 - The **Docker image has not been built** — no Docker daemon available locally. The compiled
   output runs, which retires most of the risk, but the image itself is unverified.
 
@@ -357,8 +383,11 @@ reading documentation would have surfaced this; one real call did.
 - **Make a live call earlier.** I built the whole gateway against a mock provider and tested
   against the real one late. The mock was the right call for the test suite; it was the wrong
   call for validating my assumptions about the world.
-- **Set up Postgres in CI on day one**, rather than deferring it and having to write it up as
-  a known gap that I then could not close for want of a database.
+- **Get the real infrastructure in front of the code sooner.** Every genuine bug in this
+  build — the retired model IDs, the reasoning-token empty response, the connection round
+  trips, the disabled TLS verification — was found by pointing the code at something real,
+  and none of them were findable any other way. I did the mock-backed work first because it
+  was frictionless, and frictionless is exactly what made it blind.
 - **Grep for duplication of anything security-critical before the end.** I found the doubled
   auth path late and by accident; a five-second grep on day one would have found it.
 
