@@ -1,16 +1,53 @@
 # llm-gateway
 
-A minimal LLM gateway: virtual keys, per-key spend caps that actually block, a usage
-ledger, and graceful fallback across providers. OpenAI-compatible API.
+A minimal LLM gateway: virtual keys, per-key spend caps that actually block, a usage ledger,
+and graceful fallback across providers. OpenAI-compatible API.
+
+### Live
+
+**https://llm-gateway-a0ld.onrender.com**
+
+```bash
+curl -s -X POST https://llm-gateway-a0ld.onrender.com/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gateway-cheap",
+    "messages": [{"role": "user", "content": "In one sentence, what is an LLM gateway?"}],
+    "max_tokens": 512
+  }'
+```
+
+Two things worth trying with the same key:
+
+```bash
+# your own spend — self-scoped, no key parameter to tamper with
+curl -s https://llm-gateway-a0ld.onrender.com/v1/usage -H "Authorization: Bearer $GATEWAY_KEY"
+
+# force the primary provider down and watch the fallback chain work
+#   -> served_provider: "mock", fallback_used: true, attempts: 5
+curl -s -X POST https://llm-gateway-a0ld.onrender.com/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_KEY" -H "Content-Type: application/json" \
+  -H "x-gateway-fail-providers: groq" \
+  -d '{"model":"gateway-cheap","messages":[{"role":"user","content":"hi"}],"max_tokens":256}'
+```
+
+> Hosted on Render's free tier, which spins down when idle — the first request after a pause
+> can take 30-60s. Hit `/health` once to wake it.
 
 **Design rationale and trade-offs: [DECISIONS.md](DECISIONS.md). How AI was used:
-[AI-LOG.md](AI-LOG.md).**
+[AI-LOG.md](AI-LOG.md). Deploy runbook: `DEPLOYMENT.md` (kept out of the repo — it holds
+credentials).**
 
 ```
 caller ──► auth ──► budget reserve ──► provider chain ──► settle + log ──► response
            sk-gw-*   atomic CAS         retry/fallback/    real token
                                         circuit breaker    usage
 ```
+
+Deployed on Render (Docker, Ohio) in front of Neon Postgres (`us-east-2`), with Groq as the
+upstream provider. Verified against the live URL: 40 concurrent requests on a 500 µUSD key →
+8 admitted, 32 refused with `402`, 424 spent against the cap, no reservation leaked.
 
 ---
 

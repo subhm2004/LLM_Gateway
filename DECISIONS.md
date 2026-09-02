@@ -1,5 +1,31 @@
 # DECISIONS
 
+**Live:** https://llm-gateway-a0ld.onrender.com · **Repo:** https://github.com/subhm2004/LLM_Gateway
+
+Render (Docker, Ohio) in front of Neon Postgres (`us-east-2`), Groq as the upstream provider.
+Deployed, and every claim below that says "verified" was re-run against that URL — results in
+[How this was verified](#how-this-was-verified).
+
+---
+
+### Where the brief's questions are answered
+
+| The brief asks | Section |
+|---|---|
+| What you built, in 3-4 sentences | [What I built](#what-i-built) |
+| Moving parts & request lifecycle | [Moving parts](#moving-parts) · [Request lifecycle](#request-lifecycle-traced-end-to-end) |
+| Your 3-5 most important decisions | [The most important decisions](#the-most-important-decisions) — six, with options and the tradeoff accepted for each |
+| Why enforce budgets at the gateway? | [Why enforce budgets at the gateway](#why-enforce-budgets-at-the-gateway-rather-than-trusting-callers) |
+| Concurrency on a near-exhausted key | [Concurrency](#concurrency-two-requests-on-the-same-near-exhausted-key) |
+| Fallback policy and why | [Fallback policy](#fallback-policy) |
+| What you deliberately did NOT build | [What I deliberately did not build](#what-i-deliberately-did-not-build) |
+| The decision you're least confident about | [Least confident](#the-decision-im-least-confident-about) — answered twice, because measuring it changed the answer |
+| Where it breaks, and one more week | [Where it breaks](#where-it-breaks) · [With one more week](#with-one-more-week) |
+| Did you start from boilerplate? | No. `npm init`, six runtime dependencies. See [Notes](#notes) |
+| Do you need tests? | 38 automated, plus a live battery. Rationale in [Notes](#notes) |
+
+---
+
 ## What I built
 
 A small HTTP service that sits between callers and LLM providers and adds the four things
@@ -692,11 +718,14 @@ invariant, fallback classification, auth — and absent where it isn't. They ass
 "8 requests succeed", so it holds for any correct implementation and fails for every
 incorrect one, including ones I haven't thought of.
 
-**Not verified:** the Anthropic adapter against a live Anthropic key — written against the
-documented API, no key available; the Docker image build — no Docker daemon on this machine,
-though Render builds it from the same Dockerfile.
+**Still not verified:** the Anthropic adapter against a live Anthropic key. It is written
+against the documented Messages API and exercised only through stubs, because I had no
+Anthropic credential. It is in the repo because a genuinely different provider schema is what
+makes the fallback chain a real translation layer rather than a loop over identical clients —
+but it is untested code and I would rather say so than let its presence imply otherwise.
 
-`npm run verify` runs typecheck, the full suite and the production build in one command.
+`npm run verify` runs typecheck, the full suite and the production build in one command;
+`npm run test:pg` runs the Postgres suite against any `DATABASE_URL`.
 
 ---
 

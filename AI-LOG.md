@@ -1,10 +1,26 @@
 # AI-LOG
 
+**Live:** https://llm-gateway-a0ld.onrender.com · **Repo:** https://github.com/subhm2004/LLM_Gateway
+· **Design rationale:** [DECISIONS.md](DECISIONS.md)
+
 > **Honest summary up front:** AI wrote most of the code in this repo. I set the
 > architecture, made the judgment calls, verified the parts where being wrong is expensive,
 > and can defend every line. Where I let AI output stand unchanged, it is because I read it
 > and agreed — not because I didn't look. The most useful thing I learned is in the first
 > section: my own resilience design hid a real bug from me, and only a live call found it.
+
+### Where the brief's questions are answered
+
+| The brief asks | Section |
+|---|---|
+| Which AI tools/models, and for what | [Tools](#tools-and-what-each-was-used-for) |
+| One place the AI was wrong or misleading, and how you caught it | [Where the AI was wrong](#where-the-ai-was-wrong-or-misleading) — six, led by the one that mattered |
+| One place you overrode the AI's suggestion, and why | [Where I overrode the AI](#where-i-overrode-the-ai) — five |
+| How you stayed in control of code you didn't type — secrets, budget logic, provider call | [Staying in control](#staying-in-control-of-code-i-didnt-type), including [where I was less rigorous](#where-i-was-less-rigorous--stated-plainly) |
+| Something you had to learn from scratch, and how you got up to speed | [Learned from scratch](#something-i-had-to-learn-from-scratch) |
+
+Every bug described here is one I actually hit during the build, with the evidence that
+caught it. None of them are hypothetical.
 
 ---
 
@@ -321,8 +337,11 @@ the real context windows (including `qwen/qwen3.8-27b`'s odd 131,042 rather than
   (7 admitted, 33 refused, spent 371 of a 500 cap, nothing leaked). Running it is what found
   the round-trip bug above. What remains is a process gap, not a correctness unknown: neither
   suite runs in CI, so nothing stops the two copies of the CAS drifting on the next change.
-- The **Docker image has not been built** — no Docker daemon available locally. The compiled
-  output runs, which retires most of the risk, but the image itself is unverified.
+- The **Docker image** was unverified locally — no Docker daemon on this machine. That one
+  resolved itself on deploy: Render built the image from this repo's `Dockerfile`, it boots,
+  and it passes its healthcheck. Worth noting as a category, though: "it compiles and runs
+  from `dist/`" is not the same claim as "the image builds," and I shipped for a while
+  without knowing which one I had.
 
 ---
 
@@ -390,3 +409,7 @@ reading documentation would have surfaced this; one real call did.
   was frictionless, and frictionless is exactly what made it blind.
 - **Grep for duplication of anything security-critical before the end.** I found the doubled
   auth path late and by accident; a five-second grep on day one would have found it.
+- **Deploy on day one, not at the end.** Deploying surfaced two things in ten minutes that
+  local work never would have: the blueprint pointed at a region 12,000 km from the database,
+  and the Docker image had never actually been built. Both were config I had written myself
+  and read several times.
