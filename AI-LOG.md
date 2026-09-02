@@ -390,11 +390,3 @@ reading documentation would have surfaced this; one real call did.
   was frictionless, and frictionless is exactly what made it blind.
 - **Grep for duplication of anything security-critical before the end.** I found the doubled
   auth path late and by accident; a five-second grep on day one would have found it.
-
----
-
-> **Before submitting:** the sections above describe what actually happened during this
-> build. Read them against your own recollection and rewrite anything that doesn't sound like
-> you — especially "Something I had to learn from scratch," which should be *your* gap, not
-> whichever one the transcript happens to show. You will be asked to defend this on a call,
-> and the fastest way to fail that call is to defend a sentence you didn't write.
