@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "priced_at": "2026-09-02",
+  "pricing_sources": {
+    "stub": "in-process test double"
+  },
+  "routes": {
+    "test-priced": {
+      "description": "Single stub target. 1 token = 1 micro-USD in and out.",
+      "targets": [
+        {
+          "provider": "stub",
+          "model": "stub-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        }
+      ]
+    },
+    "test-fallback": {
+      "description": "Two failing targets then a healthy one.",
+      "targets": [
+        {
+          "provider": "boom",
+          "model": "boom-1",
+          "input_usd_per_mtok": 5.0,
+          "output_usd_per_mtok": 5.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        },
+        {
+          "provider": "boom2",
+          "model": "boom-2",
+          "input_usd_per_mtok": 3.0,
+          "output_usd_per_mtok": 3.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        },
+        {
+          "provider": "stub",
+          "model": "stub-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        }
+      ]
+    },
+    "test-caller-error": {
+      "description": "First target rejects the request as malformed; must NOT fall through.",
+      "targets": [
+        {
+          "provider": "badreq",
+          "model": "badreq-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        },
+        {
+          "provider": "stub",
+          "model": "stub-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        }
+      ]
+    },
+    "test-all-down": {
+      "description": "Every target fails.",
+      "targets": [
+        {
+          "provider": "boom",
+          "model": "boom-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        }
+      ]
+    },
+    "test-unconfigured": {
+      "description": "Unconfigured provider is skipped, not attempted.",
+      "targets": [
+        {
+          "provider": "nokey",
+          "model": "nokey-1",
+          "input_usd_per_mtok": 9.0,
+          "output_usd_per_mtok": 9.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        },
+        {
+          "provider": "stub",
+          "model": "stub-1",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 8192,
+          "default_max_tokens": 100
+        }
+      ]
+    }
+  }
+}
