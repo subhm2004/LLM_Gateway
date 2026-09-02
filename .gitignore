@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+data/
+DEPLOYMENT.md
+commits.sh
+*.db
+*.db-shm
+*.db-wal
