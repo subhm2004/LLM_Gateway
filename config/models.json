@@ -1,0 +1,234 @@
+{
+  "version": 2,
+  "priced_at": "2026-09-02",
+  "models_verified_against": "GET https://api.groq.com/openai/v1/models on 2026-09-02",
+  "pricing_sources": {
+    "groq": "https://groq.com/pricing, cross-checked against aipricing.guru/groq-pricing (synced 2026-09-02)",
+    "anthropic": "https://claude.com/pricing#api",
+    "mock": "free \u2014 runs in-process, no provider call",
+    "mock-priced": "synthetic price on a free local model, so budget enforcement is demonstrable with no provider credential"
+  },
+  "routes": {
+    "openai/gpt-oss-20b": {
+      "description": "Cheapest real model. Reasoning-tuned; good for classification and extraction.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-20b",
+          "input_usd_per_mtok": 0.075,
+          "output_usd_per_mtok": 0.3,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "openai/gpt-oss-120b": {
+      "description": "General purpose. Primary chat route.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-20b",
+          "input_usd_per_mtok": 0.075,
+          "output_usd_per_mtok": 0.3,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "qwen/qwen3.6-27b": {
+      "description": "Alibaba Qwen 3.6. Pricier per token than gpt-oss-120b \u2014 routed to on its own merits, not as a cheap fallback.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "qwen/qwen3.6-27b",
+          "input_usd_per_mtok": 0.6,
+          "output_usd_per_mtok": 3.0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "qwen/qwen3.8-27b": {
+      "description": "Alibaba Qwen 3.8. Note the 131042 context window \u2014 30 tokens short of the usual 131072, which is exactly the kind of detail a hardcoded constant gets wrong.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "qwen/qwen3.8-27b",
+          "input_usd_per_mtok": 0.8,
+          "output_usd_per_mtok": 4.0,
+          "context_window": 131042,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      "description": "Safety-classification variant. Same price as gpt-oss-20b.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-safeguard-20b",
+          "input_usd_per_mtok": 0.075,
+          "output_usd_per_mtok": 0.3,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "gateway-cheap": {
+      "description": "Alias: cheapest thing that can answer. Never escalates to a pricier model.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-20b",
+          "input_usd_per_mtok": 0.075,
+          "output_usd_per_mtok": 0.3,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "gateway-capable": {
+      "description": "Alias: best available, degrading across providers. A genuinely cross-schema chain \u2014 Groq (OpenAI-shaped) -> Anthropic (Messages-shaped) -> in-process mock.",
+      "targets": [
+        {
+          "provider": "groq",
+          "model": "openai/gpt-oss-120b",
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-4-5",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 5.0,
+          "context_window": 200000,
+          "default_max_tokens": 2048
+        },
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 2048
+        }
+      ]
+    },
+    "mock-echo": {
+      "description": "Deterministic in-process model. Free. Used by tests and the fallback demo.",
+      "targets": [
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "context_window": 131072,
+          "default_max_tokens": 256
+        }
+      ]
+    },
+    "mock-priced": {
+      "description": "The mock model with a synthetic $1.00/Mtok price, so budget enforcement, blocking and the spend ledger can be demonstrated end to end with no provider credential. Costs nothing real.",
+      "targets": [
+        {
+          "provider": "mock",
+          "model": "mock-echo",
+          "input_usd_per_mtok": 1.0,
+          "output_usd_per_mtok": 1.0,
+          "context_window": 131072,
+          "default_max_tokens": 256
+        }
+      ]
+    }
+  }
+}
